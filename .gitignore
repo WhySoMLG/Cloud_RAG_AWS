@@ -1,0 +1,12 @@
+# Environments
+.env
+venv/
+env/
+
+# Python caches
+__pycache__/
+*.pyc
+
+# Local vector databases (if you ever test locally again)
+rag_db/
+.chroma/
