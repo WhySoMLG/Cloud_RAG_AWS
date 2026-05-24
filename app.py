@@ -12,14 +12,14 @@ from rag_connector import RAGConnector
 # --- 1. PAGE CONFIGURATION ---
 st.set_page_config(page_title="Multimodal RAG", page_icon="🧠", layout="wide")
 st.title("🧠 Cloud-Optimized Multimodal RAG")
-st.markdown("Upload documents, images, audio, or video. Powered by Gemini APIs and Pinecone.")
+st.markdown("Upload documents or images. Powered by GitHub Models (GPT-4o-mini) and Pinecone.")
 
 # --- 2. SESSION STATE SETUP ---
 if "session_id" not in st.session_state:
     st.session_state.session_id = str(uuid.uuid4())
 
 if "rag" not in st.session_state:
-    with st.spinner("Connecting to Pinecone Vector DB and Gemini APIs..."):
+    with st.spinner("Connecting to Pinecone Vector DB and GitHub Models..."):
         try:
             st.session_state.rag = RAGConnector()
         except ValueError as e:
@@ -32,20 +32,31 @@ if "messages" not in st.session_state:
 # --- 3. SIDEBAR: DATA INGESTION ---
 with st.sidebar:
     st.header("📥 Ingest Data")
-    st.info("Supported: PDFs, DOCX, Images, Video, Audio.")
+    st.info("Supported: PDFs, DOCX, TXT, Images.")
     
     uploaded_file = st.file_uploader("Upload a file:")
     
     if uploaded_file is not None:
         if st.button("Process & Index File"):
-            with st.spinner(f"Sending `{uploaded_file.name}` to Gemini for multimodal processing..."):
+            with st.spinner(f"Processing `{uploaded_file.name}`..."):
                 file_extension = Path(uploaded_file.name).suffix
+                
                 with tempfile.NamedTemporaryFile(delete=False, suffix=file_extension) as tmp_file:
-                    tmp_file.write(uploaded_file.read())
                     tmp_path = tmp_file.name
                 
+                with open(tmp_path, "wb") as f:
+                    while True:
+                        chunk = uploaded_file.read(8192) 
+                        if not chunk:
+                            break
+                        f.write(chunk)
+                
                 try:
-                    st.session_state.rag.index(tmp_path, st.session_state.session_id)
+                    st.session_state.rag.index(
+                        file_path=tmp_path, 
+                        session_id=st.session_state.session_id, 
+                        mime_type=uploaded_file.type
+                    )
                     st.success(f"Indexed {uploaded_file.name} successfully!")
                 except Exception as e:
                     st.error(f"Error during ingestion: {e}")
@@ -64,7 +75,7 @@ if prompt:
         st.markdown(prompt)
         
     with st.chat_message("assistant"):
-        with st.spinner("Retrieving from Pinecone and reasoning with Gemini..."):
+        with st.spinner("Retrieving from Pinecone and reasoning with GPT-4o-mini..."):
             try:
                 results = st.session_state.rag.query(
                     question=prompt, 

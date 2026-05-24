@@ -2,13 +2,14 @@ import os
 import uuid
 import logging
 from pinecone import Pinecone, ServerlessSpec
-from google import genai
+from openai import OpenAI
 from multimodal_rag_pipeline import MultimodalRAGPipeline
 
 logger = logging.getLogger("RAGConnector")
 
 class PineconeStore:
-    def __init__(self, index_name="multimodal-rag-v2", dimension=3072):
+    # Notice the new dimension (1536) and new index name
+    def __init__(self, index_name="github-rag-v1", dimension=1536): 
         api_key = os.environ.get("PINECONE_API_KEY")
         if not api_key:
             raise ValueError("PINECONE_API_KEY environment variable is required.")
@@ -52,34 +53,47 @@ class PineconeStore:
 
 class RAGConnector:
     def __init__(self):
-        gemini_api_key = os.environ.get("GEMINI_API_KEY")
-        if not gemini_api_key:
-            raise ValueError("GEMINI_API_KEY environment variable is missing.")
+        token = os.environ.get("GITHUB_TOKEN")
+        if not token:
+            raise ValueError("GITHUB_TOKEN environment variable is missing.")
         
-        self.client = genai.Client()
-        self.vector_db = PineconeStore(index_name="multimodal-rag-v2", dimension=3072)
+        self.client = OpenAI(
+            base_url="https://models.inference.ai.azure.com",
+            api_key=token,
+        )
+        self.vector_db = PineconeStore(index_name="github-rag-v1", dimension=1536)
         self.pipeline = MultimodalRAGPipeline()
         
-        self.embed_model = 'gemini-embedding-2' 
-        self.llm_model = 'gemini-2.5-flash'
+        # Top-tier Microsoft/OpenAI models
+        self.embed_model = 'text-embedding-3-small' 
+        self.llm_model = 'gpt-4o-mini'
 
-    def index(self, file_path: str, session_id: str):
-        chunks = self.pipeline.ingest(file_path)
-        for chunk in chunks:
-            result = self.client.models.embed_content(
-                model=self.embed_model, 
-                contents=chunk["text"]
-            )
-            vector = result.embeddings[0].values
+    def index(self, file_path: str, session_id: str, mime_type: str = None):
+        chunks = self.pipeline.ingest(file_path, mime_type)
+        if not chunks:
+            return
+            
+        chunk_texts = [chunk["text"] for chunk in chunks]
+
+        # Send ONE batch request to embed all chunks instantly
+        response = self.client.embeddings.create(
+            input=chunk_texts,
+            model=self.embed_model
+        )
+        
+        for chunk, embedding_data in zip(chunks, response.data):
+            vector = embedding_data.embedding
             self.vector_db.upsert(chunk, vector, namespace=session_id)
 
     def query(self, question: str, session_id: str, top_k=5):
-        result = self.client.models.embed_content(
-            model=self.embed_model, 
-            contents=question
+        # 1. Embed the question
+        embed_response = self.client.embeddings.create(
+            input=question,
+            model=self.embed_model
         )
-        query_vector = result.embeddings[0].values
+        query_vector = embed_response.data[0].embedding
         
+        # 2. Search Pinecone
         candidates = self.vector_db.query(query_vector, namespace=session_id, top_k=top_k)
         
         context_texts = [f"Source: {c['metadata'].get('source')}\nContent: {c['metadata'].get('text')}" for c in candidates]
@@ -87,13 +101,17 @@ class RAGConnector:
         
         prompt = f"Use the following context to answer the user's question.\n\nContext:\n{context_blob}\n\nQuestion: {question}"
         
-        response = self.client.models.generate_content(
+        # 3. Generate Answer
+        response = self.client.chat.completions.create(
             model=self.llm_model,
-            contents=prompt
+            messages=[
+                {"role": "system", "content": "You are a helpful assistant."},
+                {"role": "user", "content": prompt}
+            ]
         )
         
         return {
             "question": question,
-            "answer": response.text,
+            "answer": response.choices[0].message.content,
             "sources": candidates
         }
